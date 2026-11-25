@@ -1,0 +1,10 @@
+[project]
+name = "mcp-cisco-helper"
+version = "0.1.0"
+description = "MCP-сервер с инструментами Cisco (подсети, VLSM, IOS-конфиги) и агент на модели NVIDIA через OpenRouter"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=2.3.0",
+    "openai>=1.0",
+    "python-dotenv>=1.2.4",
+]
