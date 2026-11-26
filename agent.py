@@ -25,12 +25,31 @@ from openai import AsyncOpenAI
 
 HERE = Path(__file__).parent
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+PREFERRED = ["super", "ultra", "nano"]  # порядок выбора бесплатных моделей NVIDIA
 MAX_STEPS = 10
 SYSTEM_PROMPT = (
     "Ты помощник сетевого инженера Cisco. Для расчётов подсетей, VLSM, "
     "генерации команд IOS и поиска портов всегда вызывай инструменты, "
     "а не считай в уме. Команды IOS показывай в блоке кода. Отвечай по-русски."
 )
+
+
+def free_nvidia_models() -> list[str]:
+    """Бесплатные модели NVIDIA на OpenRouter, умеющие вызывать инструменты."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("https://openrouter.ai/api/v1/models", timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8"))["data"]
+    except Exception:
+        return [DEFAULT_MODEL]
+    ids = [
+        m["id"] for m in data
+        if m["id"].startswith("nvidia/") and m["id"].endswith(":free")
+        and "tools" in (m.get("supported_parameters") or [])
+    ]
+    rank = lambda i: next((n for n, w in enumerate(PREFERRED) if w in i), len(PREFERRED))
+    return sorted(ids, key=rank) or [DEFAULT_MODEL]
 
 
 def to_openai_tool(tool) -> dict:
@@ -86,7 +105,8 @@ async def main() -> int:
               "и вставьте ключ с https://openrouter.ai/keys", file=sys.stderr)
         return 1
 
-    model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+    candidates = [os.environ["OPENROUTER_MODEL"]] if os.environ.get("OPENROUTER_MODEL") else free_nvidia_models()
+    model = candidates[0]
     client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
     server = StdioServerParameters(command=sys.executable, args=[str(HERE / "server.py")])
 
@@ -94,15 +114,24 @@ async def main() -> int:
         await session.initialize()
         mcp_tools = (await session.list_tools()).tools
         tools = [to_openai_tool(t) for t in mcp_tools]
-        print(f"Модель:          {model} (OpenRouter)")
+        print(f"Модели NVIDIA:   {', '.join(candidates)} (OpenRouter)")
         print(f"Инструменты MCP: {', '.join(t.name for t in mcp_tools)}\n")
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if len(sys.argv) > 1:
             question = " ".join(sys.argv[1:])
             print(f"Вопрос: {question}\n")
-            print(f"\nОтвет:\n{await ask(client, model, session, tools, messages, question)}")
-            return 0
+            for model in candidates:
+                try:
+                    answer = await ask(client, model, session, tools, list(messages), question)
+                except Exception as error:  # модель недоступна -> следующая бесплатная NVIDIA
+                    print(f"  [{model}] недоступна: {str(error)[:120]}\n")
+                    continue
+                print(f"Модель ответила: {model}")
+                print(f"\nОтвет:\n{answer}")
+                return 0
+            print("Ни одна бесплатная модель NVIDIA сейчас не отвечает.")
+            return 1
 
         while True:
             try:
